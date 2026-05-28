@@ -31,6 +31,7 @@ contract OTC is BaseHook, ERC1155 {
         pendingOrders;
     mapping(uint256 orderId => uint256 claimsSupply) public claimTokensSupply;
     mapping(uint256 orderId => uint256 outputClaimable) public claimableOutputTokens;
+    mapping(PoolId poolId => int24 lastTick) public lastTicks;
 
     constructor(IPoolManager _manager, string memory _uri) BaseHook(_manager) ERC1155(_uri) {}
 
@@ -194,18 +195,122 @@ contract OTC is BaseHook, ERC1155 {
         return _delta;
     }
 
-    function _afterInitialize(address, PoolKey calldata key, uint160, int24 tick) internal override returns (bytes4) {
-        // TODO
+    function _afterInitialize(address, PoolKey calldata _key, uint160, int24 _tick) internal override returns (bytes4) {
+        lastTicks[_key.toId()] = _tick;
         return this.afterInitialize.selector;
     }
 
-    function _afterSwap(address sender, PoolKey calldata key, SwapParams calldata params, BalanceDelta, bytes calldata)
-        internal
-        override
-        returns (bytes4, int128)
-    {
-        // TODO
+    function _afterSwap(
+        address _sender,
+        PoolKey calldata _key,
+        SwapParams calldata _params,
+        BalanceDelta,
+        bytes calldata
+    ) internal override returns (bytes4, int128) {
+        // `_sender` is the address which initiated the swap
+        // if `_sender` is the hook, we don't want to go down the `afterSwap` rabbit hole again
+        if (_sender == address(this)) return (this.afterSwap.selector, 0);
+
+        // Should we try to find and execute orders? True initially
+        bool _tryMore = true;
+        int24 _currentTick;
+
+        while (_tryMore) {
+            // Try executing pending orders for this pool
+
+            // `_tryMore` is true if we successfully found and executed an order
+            // which shifted the tick value
+            // and therefore we need to look again if there are any pending orders
+            // within the new tick range
+
+            // `tickAfterExecutingOrder` is the tick value of the pool
+            // after executing an order
+            // if no order was executed, `tickAfterExecutingOrder` will be
+            // the same as current tick, and `_tryMore` will be false
+            (_tryMore, _currentTick) = _tryExecutingOrders(_key, !_params.zeroForOne);
+        }
+
+        // New last known tick for this pool is the tick value
+        // after our orders are executed
+        lastTicks[_key.toId()] = _currentTick;
         return (this.afterSwap.selector, 0);
+    }
+
+    function _tryExecutingOrders(PoolKey calldata _key, bool _executeZeroForOne)
+        internal
+        returns (bool _tryMore, int24 _newTick)
+    {
+        (, int24 _currentTick,,) = poolManager.getSlot0(_key.toId());
+        int24 _lastTick = lastTicks[_key.toId()];
+
+        // Given `_currentTick` and `_lastTick`, 2 cases are possible:
+
+        // Case (1) - Tick has increased, i.e. `_currentTick > _lastTick`
+        // or, Case (2) - Tick has decreased, i.e. `_currentTick < _lastTick`
+
+        // If tick increases => Token 0 price has increased
+        // => We should check if we have orders looking to sell Token 0
+        // i.e. orders with zeroForOne = true
+
+        // ------------
+        // Case (1)
+        // ------------
+
+        // Tick has increased i.e. people bought Token 0 by selling Token 1
+        // i.e. Token 0 price has increased
+        // e.g. in an ETH/USDC pool, people are buying ETH for USDC causing ETH price to increase
+        // We should check if we have any orders looking to sell Token 0
+        // at ticks `_lastTick` to `_currentTick`
+        // i.e. check if we have any orders to sell ETH at the new price that ETH is at now because of the increase
+        if (_currentTick > _lastTick) {
+            // Loop over all usable ticks from `_lastTick` up to `_currentTick` and
+            // execute orders that are looking to sell Token 0. We align the
+            // starting tick to a multiple of `tickSpacing` because pending orders
+            // are always recorded at usable ticks.
+            for (
+                int24 _tick = _getLowerUsableTick(_lastTick, _key.tickSpacing);
+                _tick < _currentTick;
+                _tick += _key.tickSpacing
+            ) {
+                uint256 _inputAmount = pendingOrders[_key.toId()][_tick][_executeZeroForOne];
+                if (_inputAmount > 0) {
+                    // An order with these parameters can be placed by one or more users
+                    // We execute the full order as a single swap
+                    // Regardless of how many unique users placed the same order
+                    executeOrder(_key, _tick, _executeZeroForOne, _inputAmount);
+
+                    // Return true because we may have more orders to execute
+                    // from _lastTick to new current tick
+                    // But we need to iterate again from scratch since our sale of ETH shifted the tick down
+                    return (true, _currentTick);
+                }
+            }
+        }
+        // ------------
+        // Case (2)
+        // ------------
+        // Tick has gone down i.e. people bought Token 1 by selling Token 0
+        // i.e. Token 1 price has increased
+        // e.g. in an ETH/USDC pool, people are selling ETH for USDC causing ETH price to decrease (and USDC to increase)
+        // We should check if we have any orders looking to sell Token 1
+        // at ticks `_currentTick` to `_lastTick`
+        // i.e. check if we have any orders to buy ETH at the new price that ETH is at now because of the decrease
+        else {
+            // Same alignment requirement as Case (1).
+            for (
+                int24 _tick = _getLowerUsableTick(_lastTick, _key.tickSpacing);
+                _tick > _currentTick;
+                _tick -= _key.tickSpacing
+            ) {
+                uint256 inputAmount = pendingOrders[_key.toId()][_tick][_executeZeroForOne];
+                if (inputAmount > 0) {
+                    executeOrder(_key, _tick, _executeZeroForOne, inputAmount);
+                    return (true, _currentTick);
+                }
+            }
+        }
+
+        return (false, _currentTick);
     }
 
     function _settle(Currency currency, uint128 _amount) internal {

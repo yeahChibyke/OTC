@@ -8,4 +8,7 @@ optimizer_runs = 800
 via_ir = false
 ffi = true
 
+[lint]
+exclude_lints = ["unsafe-typecast"]
+
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
