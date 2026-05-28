@@ -1,0 +1,35 @@
+{
+  "lib/BokkyPooBahsDateTimeLibrary": {
+    "rev": "1dc26f977c57a6ba3ed6d7c53cafdb191e7e59ae"
+  },
+  "lib/briefcase": {
+    "rev": "62c718ec25b64ecc95b4e09c2751134d78b89a4f"
+  },
+  "lib/dao-signer": {
+    "rev": "ee1e73fbda9b3328aca30d9e42ca78819f4383a3"
+  },
+  "lib/forge-std": {
+    "rev": "77041d2ce690e692d6e03cc812b57d1ddaa4d505"
+  },
+  "lib/murky": {
+    "rev": "5feccd1253d7da820f7cccccdedf64471025455d"
+  },
+  "lib/openzeppelin-contracts": {
+    "rev": "e34251682bac9c3252af30e91e999f13dd098b9f"
+  },
+  "lib/optimism": {
+    "tag": {
+      "name": "v1.16.0",
+      "rev": "971c25eb5a5564ce239e3c4a95778abb24ca87d7"
+    }
+  },
+  "lib/solmate": {
+    "rev": "e5e0ed64c75e74974151780884e59071d026d84e"
+  },
+  "lib/v3-core": {
+    "rev": "e3589b192d0be27e100cd0daaf6c97204fdb1899"
+  },
+  "lib/v4-core": {
+    "rev": "59d3ecf53afa9264a16bba0e38f4c5d2231f80bc"
+  }
+}

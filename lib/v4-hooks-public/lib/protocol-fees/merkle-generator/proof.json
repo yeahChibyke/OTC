@@ -1,0 +1,73 @@
+{
+  "root": "0x414b3244586a0a8ccde5f69624d8c697705f894f429e2d5adecefddd375d2f58",
+  "pairs": [
+    {
+      "token0": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+      "token1": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+    },
+    {
+      "token0": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+      "token1": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+    }
+  ],
+  "multiProof": {
+    "leaves": [
+      [
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2"
+      ],
+      [
+        "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599",
+        "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"
+      ]
+    ],
+    "proof": [
+      "0x6491c363f49ce4bb83ce9c2cdd5b56a962c53cf8ad104219ed91385ed1540802",
+      "0xebece2c743a5fbb314dc2776f896d72e2ff67d3a4f129f1757aa5d5ab677e33a",
+      "0x900fc66a8b61766ca646f09e7674c9d4afc83f717334111f535080c4eccd6c9c",
+      "0x211e83765b6d8e124531eae66c1ee4f9e0570b4c75e9508fd4df802725b5ad4f",
+      "0x5e2bf878cd5f31d0f58df92cbb5ca98ce84608ac1199285988142696e13f138d",
+      "0x00297a030932b384d55bbdcdcaaa589fcac62f155c3764d27e49d16ec3316227",
+      "0x070584a9c964c10b35d9cbd891ae71c5c8c3c4a323a7d4c0ad2dcaea0adb9400",
+      "0xbaa50bad5c1038ae56de2dd71badc88c1002f85c225a57d35eb6de619334880e",
+      "0x13bf26148a62f801302746719a0d2360a06c5e803193847305545f77f4286c39",
+      "0x5f8c7d372cb4665567e935966e87020a510746aec6a2939d618c39a1fb3d6628",
+      "0xa3c2cb41e9d0a2de1f5c0fe79764073cd124567902b40c6bb637815342d0569b",
+      "0x75fed44c10fe53b6b9414e14e8a214c56cd02a0bb5c8c2d948f20a546cc376ca",
+      "0xe57a4a98131339fc9734284b6a36e99db186fcbf0640773512a5742c336e8d7f",
+      "0xe5fca2152a8d5a7d959aaa133b564fa41e5155dcccabfe17289d887eb2670185",
+      "0xf2804f3a9b11e320fabcc68c5c0b4beabdbb43eaaaec7c2a8a2c44818ef3ef29",
+      "0xfbe9480f027e8126275f82da9e2fccd453384539a6b48bf811cc853cf2f087f0",
+      "0x53e476e913319c5b3714c352ff8975a79548d96e11cdd06c7dd6be975d417c20",
+      "0xa3e710526979e9dec0755d7e2357c3ef5ef01f838e0a4345736107cb179fb8a1",
+      "0xbc0721000f45dd0c27e8caf9cad20735b833154350d7dc41c2beae6c474f45c3"
+    ],
+    "proofFlags": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "valid": true,
+  "usage": {
+    "description": "Use this multi-proof for batch verification of multiple token pairs",
+    "note": "The order of leaves may differ from input order - they are reordered by the tree"
+  }
+}

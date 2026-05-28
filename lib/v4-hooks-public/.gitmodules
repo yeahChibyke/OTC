@@ -1,0 +1,25 @@
+[submodule "lib/forge-std"]
+	path = lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "lib/forge-chronicles"]
+	path = lib/forge-chronicles
+	url = https://github.com/0xPolygon/forge-chronicles
+[submodule "lib/briefcase"]
+	path = lib/briefcase
+	url = https://github.com/Uniswap/briefcase
+[submodule "lib/v4-periphery"]
+	path = lib/v4-periphery
+	url = https://github.com/Uniswap/v4-periphery
+[submodule "lib/protocol-fees"]
+	path = lib/protocol-fees
+	url = https://github.com/Uniswap/protocol-fees
+	branch = v4-fee-adapter
+[submodule "lib/v4-core"]
+	path = lib/v4-core
+	url = https://github.com/Uniswap/v4-core
+[submodule "lib/fluid-contracts-public"]
+	path = lib/fluid-contracts-public
+	url = https://github.com/Instadapp/fluid-contracts-public.git
+[submodule "lib/openzeppelin-contracts"]
+	path = lib/openzeppelin-contracts
+	url = https://github.com/OpenZeppelin/openzeppelin-contracts.git

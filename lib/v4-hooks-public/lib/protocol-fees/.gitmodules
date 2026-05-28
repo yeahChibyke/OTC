@@ -1,0 +1,30 @@
+[submodule "lib/forge-std"]
+	path = lib/forge-std
+	url = https://github.com/foundry-rs/forge-std
+[submodule "lib/openzeppelin-contracts"]
+	path = lib/openzeppelin-contracts
+	url = https://github.com/openzeppelin/openzeppelin-contracts
+[submodule "lib/solmate"]
+	path = lib/solmate
+	url = https://github.com/transmissions11/solmate
+[submodule "lib/v4-core"]
+	path = lib/v4-core
+	url = https://github.com/uniswap/v4-core
+[submodule "lib/murky"]
+	path = lib/murky
+	url = https://github.com/dmfxyz/murky
+[submodule "lib/v3-core"]
+	path = lib/v3-core
+	url = https://github.com/Uniswap/v3-core
+[submodule "lib/briefcase"]
+	path = lib/briefcase
+	url = https://github.com/Uniswap/briefcase
+[submodule "lib/optimism"]
+	path = lib/optimism
+	url = https://github.com/ethereum-optimism/optimism
+[submodule "lib/BokkyPooBahsDateTimeLibrary"]
+	path = lib/BokkyPooBahsDateTimeLibrary
+	url = https://github.com/bokkypoobah/BokkyPooBahsDateTimeLibrary
+[submodule "lib/dao-signer"]
+	path = lib/dao-signer
+	url = https://github.com/ScopeLift/dao-signer
