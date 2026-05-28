@@ -16,107 +16,144 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {FixedPointMathLib} from "solmate/src/utils/FixedPointMathLib.sol";
 
+/// @title OTC
+/// @notice A Uniswap v4 hook that lets users leave tick-triggered token sale orders.
+/// @dev Orders are represented by ERC-1155 claim tokens. When a swap moves the pool
+///      across an order tick, the hook swaps the escrowed input through the same pool
+///      and records the received output for proportional redemption by claim holders.
 contract OTC is BaseHook, ERC1155 {
     using SafeERC20 for IERC20;
     using StateLibrary for IPoolManager;
     using FixedPointMathLib for uint256;
 
+    // -------------------------------------------------------------------------
     // Errors
+    // -------------------------------------------------------------------------
+
+    /// @notice Reserved for invalid order validation.
     error OTC__InvalidOrder();
+
+    /// @notice Thrown when a user tries to redeem before an order has produced output.
     error OTC__NothingToClaim();
+
+    /// @notice Thrown when a user tries to cancel or redeem more claim tokens than they own.
     error OTC__NotEnoughToClaim();
 
-    // State Variables
+    // -------------------------------------------------------------------------
+    // Storage
+    // -------------------------------------------------------------------------
+
+    /// @notice Input tokens still waiting to be sold for each pool, tick, and direction.
+    /// @dev `zeroForOne == true` means token0 is escrowed and will be sold for token1.
     mapping(PoolId poolId => mapping(int24 tickToSellAt => mapping(bool zeroForOne => uint256 inputAmount))) public
         pendingOrders;
+
+    /// @notice Total ERC-1155 claim-token supply for each order id.
+    /// @dev Used as the denominator when distributing filled output pro rata.
     mapping(uint256 orderId => uint256 claimsSupply) public claimTokensSupply;
+
+    /// @notice Output tokens received from executed orders and not yet redeemed.
     mapping(uint256 orderId => uint256 outputClaimable) public claimableOutputTokens;
+
+    /// @notice Last observed pool tick after hook-managed order execution.
+    /// @dev The hook compares this value with the current tick after each external swap
+    ///      to know which tick range was crossed.
     mapping(PoolId poolId => int24 lastTick) public lastTicks;
+
+    // -------------------------------------------------------------------------
+    // Constructor
+    // -------------------------------------------------------------------------
 
     constructor(IPoolManager _manager, string memory _uri) BaseHook(_manager) ERC1155(_uri) {}
 
-    // ========== EXTERNAL FUNCTIONS ==========
+    // -------------------------------------------------------------------------
+    // User actions
+    // -------------------------------------------------------------------------
 
+    /// @notice Places a limit-style order that executes when the pool crosses a usable tick.
+    /// @dev The requested tick is rounded down to the nearest usable tick for the pool's
+    ///      spacing. The caller receives ERC-1155 claim tokens equal to the escrowed input.
+    /// @param _key Pool on which the order should execute.
+    /// @param _tickToSellAt Requested trigger tick. It is normalized to a usable tick.
+    /// @param _zeroForOne True to sell token0 for token1, false to sell token1 for token0.
+    /// @param _inputAmount Amount of input token to escrow for the order.
+    /// @return tick The usable tick at which the order was recorded.
     function placeOrder(PoolKey calldata _key, int24 _tickToSellAt, bool _zeroForOne, uint256 _inputAmount)
         external
-        returns (int24)
+        returns (int24 tick)
     {
-        // Get lower actually usable tick given `tickToSellAt`
-        int24 _tick = _getLowerUsableTick(_tickToSellAt, _key.tickSpacing);
-        // Create a pending order
-        pendingOrders[_key.toId()][_tick][_zeroForOne] += _inputAmount;
+        tick = _getLowerUsableTick(_tickToSellAt, _key.tickSpacing);
+        pendingOrders[_key.toId()][tick][_zeroForOne] += _inputAmount;
 
-        // Mint claim tokens to user equal to their `_inputAmount`
-        uint256 _orderId = getOrderId(_key, _tick, _zeroForOne);
-        claimTokensSupply[_orderId] += _inputAmount;
-        _mint(msg.sender, _orderId, _inputAmount, "");
+        uint256 orderId = getOrderId(_key, tick, _zeroForOne);
+        claimTokensSupply[orderId] += _inputAmount;
+        _mint(msg.sender, orderId, _inputAmount, "");
 
-        // Depending on direction of swap, we select the proper input token
-        // and request a transfer of those tokens to the hook contract
         address sellToken = _zeroForOne ? Currency.unwrap(_key.currency0) : Currency.unwrap(_key.currency1);
         IERC20(sellToken).safeTransferFrom(msg.sender, address(this), _inputAmount);
-
-        // Return the tick at which the order was actually placed
-        return _tick;
     }
 
+    /// @notice Cancels an unfilled order position and returns the original input token.
+    /// @dev Only pending input can be cancelled. Once an order has executed, the user must
+    ///      redeem output tokens instead.
+    /// @param _key Pool used to derive the order id.
+    /// @param _tickToSellAt Requested or normalized tick for the order.
+    /// @param _zeroForOne Original order direction.
+    /// @param _amountToCancel Amount of claim tokens/input to cancel.
     function cancelOrder(PoolKey calldata _key, int24 _tickToSellAt, bool _zeroForOne, uint256 _amountToCancel)
         external
     {
-        // Get lower actually usable tick for their order
-        int24 _tick = _getLowerUsableTick(_tickToSellAt, _key.tickSpacing);
-        uint256 _orderId = getOrderId(_key, _tick, _zeroForOne);
+        int24 tick = _getLowerUsableTick(_tickToSellAt, _key.tickSpacing);
+        uint256 orderId = getOrderId(_key, tick, _zeroForOne);
 
-        // Check how many claim tokens they have for this position
-        uint256 _positionTokens = balanceOf(msg.sender, _orderId);
-        if (_positionTokens < _amountToCancel) revert OTC__NotEnoughToClaim();
+        uint256 positionTokens = balanceOf(msg.sender, orderId);
+        if (positionTokens < _amountToCancel) revert OTC__NotEnoughToClaim();
 
-        // Remove their `_amountToCancel` worth of position from pending orders
-        pendingOrders[_key.toId()][_tick][_zeroForOne] -= _amountToCancel;
-        // Reduce claim token total supply and burn their share
-        claimTokensSupply[_orderId] -= _amountToCancel;
-        _burn(msg.sender, _orderId, _amountToCancel);
+        pendingOrders[_key.toId()][tick][_zeroForOne] -= _amountToCancel;
+        claimTokensSupply[orderId] -= _amountToCancel;
+        _burn(msg.sender, orderId, _amountToCancel);
 
-        // Send them their input token
         Currency token = _zeroForOne ? _key.currency0 : _key.currency1;
         token.transfer(msg.sender, _amountToCancel);
     }
 
+    /// @notice Burns claim tokens and transfers the caller's pro-rata filled output.
+    /// @dev A single order id can contain liquidity from many users. Output is distributed
+    ///      by the caller's claim amount divided by the current total claim-token supply.
+    /// @param _key Pool used to derive the order id.
+    /// @param _tickToSellAt Requested or normalized tick for the order.
+    /// @param _zeroForOne Original order direction.
+    /// @param _inputAmountToClaimFor Claim-token amount to redeem.
     function redeem(PoolKey calldata _key, int24 _tickToSellAt, bool _zeroForOne, uint256 _inputAmountToClaimFor)
         external
     {
-        // Get lower actually usable tick for their order
-        int24 _tick = _getLowerUsableTick(_tickToSellAt, _key.tickSpacing);
-        uint256 _orderId = getOrderId(_key, _tick, _zeroForOne);
+        int24 tick = _getLowerUsableTick(_tickToSellAt, _key.tickSpacing);
+        uint256 orderId = getOrderId(_key, tick, _zeroForOne);
 
-        // if no output tokens can be claimed yet it means order has not been filled yet
-        if (claimableOutputTokens[_orderId] == 0) revert OTC__NothingToClaim();
+        if (claimableOutputTokens[orderId] == 0) revert OTC__NothingToClaim();
 
-        // must have claim tokens => _inputAmountToClaimFor
-        uint256 _claimTokens = balanceOf(msg.sender, _orderId);
-        if (_claimTokens < _inputAmountToClaimFor) revert OTC__NotEnoughToClaim();
+        uint256 claimTokens = balanceOf(msg.sender, orderId);
+        if (claimTokens < _inputAmountToClaimFor) revert OTC__NotEnoughToClaim();
 
-        uint256 _totalClaimableForPosition = claimableOutputTokens[_orderId];
-        uint256 _totalInputAmountForPosition = claimTokensSupply[_orderId];
+        uint256 totalClaimableForPosition = claimableOutputTokens[orderId];
+        uint256 totalInputAmountForPosition = claimTokensSupply[orderId];
+        uint256 outputAmount = _inputAmountToClaimFor.mulDivDown(totalClaimableForPosition, totalInputAmountForPosition);
 
-        // _outputAmount = (_inputAmountToClaimFor * _totalClaimableForPosition) / (_totalInputAmountForPosition)
-        uint256 _outputAmount =
-            _inputAmountToClaimFor.mulDivDown(_totalClaimableForPosition, _totalInputAmountForPosition);
+        claimableOutputTokens[orderId] -= outputAmount;
+        claimTokensSupply[orderId] -= _inputAmountToClaimFor;
+        _burn(msg.sender, orderId, _inputAmountToClaimFor);
 
-        // Reduce claimable output tokens amount
-        // Reduce claim token total supply for position
-        // Burn claim tokens
-        claimableOutputTokens[_orderId] -= _outputAmount;
-        claimTokensSupply[_orderId] -= _inputAmountToClaimFor;
-        _burn(msg.sender, _orderId, _inputAmountToClaimFor);
-
-        // Transfer output tokens
         Currency token = _zeroForOne ? _key.currency1 : _key.currency0;
-        token.transfer(msg.sender, _outputAmount);
+        token.transfer(msg.sender, outputAmount);
     }
 
-    // ========== PUBLIC FUNCTIONS ==========
+    // -------------------------------------------------------------------------
+    // Hook configuration and callbacks
+    // -------------------------------------------------------------------------
 
+    /// @notice Declares that this hook tracks pool initialization and reacts after swaps.
+    /// @dev `afterInitialize` seeds `lastTicks`; `afterSwap` checks crossed ticks and fills
+    ///      any matching orders.
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
@@ -136,70 +173,14 @@ contract OTC is BaseHook, ERC1155 {
         });
     }
 
-    function getOrderId(PoolKey calldata key, int24 tick, bool zeroForOne) public pure returns (uint256) {
-        return uint256(keccak256(abi.encode(key.toId(), tick, zeroForOne)));
-    }
-
-    // ========== INTERNAL FUNCTIONS ==========
-
-    function executeOrder(PoolKey calldata _key, int24 _tick, bool _zeroForOne, uint256 _inputAmount) internal {
-        // Do the actual swap and settle all balances
-        BalanceDelta _delta = _swapAndSettleBalances(
-            _key,
-            SwapParams({
-                zeroForOne: _zeroForOne,
-                // We provide a negative value here to signify an "exact input for output" swap
-                amountSpecified: -int256(_inputAmount),
-                // No slippage limits (maximum slippage possible)
-                sqrtPriceLimitX96: _zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
-            })
-        );
-
-        // `inputAmount` has been deducted from this position
-        pendingOrders[_key.toId()][_tick][_zeroForOne] -= _inputAmount;
-        uint256 _orderId = getOrderId(_key, _tick, _zeroForOne);
-        uint256 _outputAmount = _zeroForOne ? uint256(int256(_delta.amount1())) : uint256(int256(_delta.amount0()));
-
-        // `_outputAmount` worth of tokens now can be claimed/redeemed by position holders
-        claimableOutputTokens[_orderId] += _outputAmount;
-    }
-
-    function _swapAndSettleBalances(PoolKey calldata _key, SwapParams memory _params) internal returns (BalanceDelta) {
-        // Conduct the swap inside the Pool Manager
-        BalanceDelta _delta = poolManager.swap(_key, _params, "");
-
-        // If we just did a zeroForOne swap
-        // We need to send Token 0 to PM, and receive Token 1 from PM
-        if (_params.zeroForOne) {
-            // Negative Value => Money leaving user's wallet
-            // Settle with PoolManager
-            if (_delta.amount0() < 0) {
-                _settle(_key.currency0, uint128(-_delta.amount0()));
-            }
-
-            // Positive Value => Money coming into user's wallet
-            // Take from PM
-            if (_delta.amount1() > 0) {
-                _take(_key.currency1, uint128(_delta.amount1()));
-            }
-        } else {
-            if (_delta.amount1() < 0) {
-                _settle(_key.currency1, uint128(-_delta.amount1()));
-            }
-
-            if (_delta.amount0() > 0) {
-                _take(_key.currency0, uint128(_delta.amount0()));
-            }
-        }
-
-        return _delta;
-    }
-
+    /// @dev Records the pool's initial tick so later swaps can detect crossed ranges.
     function _afterInitialize(address, PoolKey calldata _key, uint160, int24 _tick) internal override returns (bytes4) {
         lastTicks[_key.toId()] = _tick;
         return this.afterInitialize.selector;
     }
 
+    /// @dev Executes any orders whose trigger ticks were crossed by the user's swap.
+    ///      Hook-initiated swaps return early to avoid recursive order execution.
     function _afterSwap(
         address _sender,
         PoolKey calldata _key,
@@ -207,136 +188,131 @@ contract OTC is BaseHook, ERC1155 {
         BalanceDelta,
         bytes calldata
     ) internal override returns (bytes4, int128) {
-        // `_sender` is the address which initiated the swap
-        // if `_sender` is the hook, we don't want to go down the `afterSwap` rabbit hole again
         if (_sender == address(this)) return (this.afterSwap.selector, 0);
 
-        // Should we try to find and execute orders? True initially
-        bool _tryMore = true;
-        int24 _currentTick;
+        bool tryMore = true;
+        int24 currentTick;
 
-        while (_tryMore) {
-            // Try executing pending orders for this pool
-
-            // `_tryMore` is true if we successfully found and executed an order
-            // which shifted the tick value
-            // and therefore we need to look again if there are any pending orders
-            // within the new tick range
-
-            // `tickAfterExecutingOrder` is the tick value of the pool
-            // after executing an order
-            // if no order was executed, `tickAfterExecutingOrder` will be
-            // the same as current tick, and `_tryMore` will be false
-            (_tryMore, _currentTick) = _tryExecutingOrders(_key, !_params.zeroForOne);
+        while (tryMore) {
+            (tryMore, currentTick) = _tryExecutingOrders(_key, !_params.zeroForOne);
         }
 
-        // New last known tick for this pool is the tick value
-        // after our orders are executed
-        lastTicks[_key.toId()] = _currentTick;
+        lastTicks[_key.toId()] = currentTick;
         return (this.afterSwap.selector, 0);
     }
 
-    function _tryExecutingOrders(PoolKey calldata _key, bool _executeZeroForOne)
-        internal
-        returns (bool _tryMore, int24 _newTick)
-    {
-        (, int24 _currentTick,,) = poolManager.getSlot0(_key.toId());
-        int24 _lastTick = lastTicks[_key.toId()];
+    // -------------------------------------------------------------------------
+    // Views
+    // -------------------------------------------------------------------------
 
-        // Given `_currentTick` and `_lastTick`, 2 cases are possible:
-
-        // Case (1) - Tick has increased, i.e. `_currentTick > _lastTick`
-        // or, Case (2) - Tick has decreased, i.e. `_currentTick < _lastTick`
-
-        // If tick increases => Token 0 price has increased
-        // => We should check if we have orders looking to sell Token 0
-        // i.e. orders with zeroForOne = true
-
-        // ------------
-        // Case (1)
-        // ------------
-
-        // Tick has increased i.e. people bought Token 0 by selling Token 1
-        // i.e. Token 0 price has increased
-        // e.g. in an ETH/USDC pool, people are buying ETH for USDC causing ETH price to increase
-        // We should check if we have any orders looking to sell Token 0
-        // at ticks `_lastTick` to `_currentTick`
-        // i.e. check if we have any orders to sell ETH at the new price that ETH is at now because of the increase
-        if (_currentTick > _lastTick) {
-            // Loop over all usable ticks from `_lastTick` up to `_currentTick` and
-            // execute orders that are looking to sell Token 0. We align the
-            // starting tick to a multiple of `tickSpacing` because pending orders
-            // are always recorded at usable ticks.
-            for (
-                int24 _tick = _getLowerUsableTick(_lastTick, _key.tickSpacing);
-                _tick < _currentTick;
-                _tick += _key.tickSpacing
-            ) {
-                uint256 _inputAmount = pendingOrders[_key.toId()][_tick][_executeZeroForOne];
-                if (_inputAmount > 0) {
-                    // An order with these parameters can be placed by one or more users
-                    // We execute the full order as a single swap
-                    // Regardless of how many unique users placed the same order
-                    executeOrder(_key, _tick, _executeZeroForOne, _inputAmount);
-
-                    // Return true because we may have more orders to execute
-                    // from _lastTick to new current tick
-                    // But we need to iterate again from scratch since our sale of ETH shifted the tick down
-                    return (true, _currentTick);
-                }
-            }
-        }
-        // ------------
-        // Case (2)
-        // ------------
-        // Tick has gone down i.e. people bought Token 1 by selling Token 0
-        // i.e. Token 1 price has increased
-        // e.g. in an ETH/USDC pool, people are selling ETH for USDC causing ETH price to decrease (and USDC to increase)
-        // We should check if we have any orders looking to sell Token 1
-        // at ticks `_currentTick` to `_lastTick`
-        // i.e. check if we have any orders to buy ETH at the new price that ETH is at now because of the decrease
-        else {
-            // Same alignment requirement as Case (1).
-            for (
-                int24 _tick = _getLowerUsableTick(_lastTick, _key.tickSpacing);
-                _tick > _currentTick;
-                _tick -= _key.tickSpacing
-            ) {
-                uint256 inputAmount = pendingOrders[_key.toId()][_tick][_executeZeroForOne];
-                if (inputAmount > 0) {
-                    executeOrder(_key, _tick, _executeZeroForOne, inputAmount);
-                    return (true, _currentTick);
-                }
-            }
-        }
-
-        return (false, _currentTick);
+    /// @notice Computes the ERC-1155 token id for a pool, usable tick, and direction.
+    /// @dev Callers should pass the normalized usable tick returned by `placeOrder`.
+    function getOrderId(PoolKey calldata key, int24 tick, bool zeroForOne) public pure returns (uint256) {
+        return uint256(keccak256(abi.encode(key.toId(), tick, zeroForOne)));
     }
 
+    // -------------------------------------------------------------------------
+    // Order execution
+    // -------------------------------------------------------------------------
+
+    /// @dev Swaps all pending input for one order and makes the output redeemable.
+    function executeOrder(PoolKey calldata _key, int24 _tick, bool _zeroForOne, uint256 _inputAmount) internal {
+        BalanceDelta delta = _swapAndSettleBalances(
+            _key,
+            SwapParams({
+                zeroForOne: _zeroForOne,
+                amountSpecified: -int256(_inputAmount),
+                sqrtPriceLimitX96: _zeroForOne ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
+            })
+        );
+
+        pendingOrders[_key.toId()][_tick][_zeroForOne] -= _inputAmount;
+
+        uint256 orderId = getOrderId(_key, _tick, _zeroForOne);
+        uint256 outputAmount = _zeroForOne ? uint256(int256(delta.amount1())) : uint256(int256(delta.amount0()));
+        claimableOutputTokens[orderId] += outputAmount;
+    }
+
+    /// @dev Searches the crossed tick range for a matching order and executes at most one.
+    ///      Returning after one fill lets the caller re-read the pool tick, because the
+    ///      hook's own swap may move price back across earlier ticks.
+    function _tryExecutingOrders(PoolKey calldata _key, bool _executeZeroForOne)
+        internal
+        returns (bool tryMore, int24 newTick)
+    {
+        (, int24 currentTick,,) = poolManager.getSlot0(_key.toId());
+        int24 lastTick = lastTicks[_key.toId()];
+
+        if (currentTick > lastTick) {
+            for (
+                int24 tick = _getLowerUsableTick(lastTick, _key.tickSpacing);
+                tick < currentTick;
+                tick += _key.tickSpacing
+            ) {
+                uint256 inputAmount = pendingOrders[_key.toId()][tick][_executeZeroForOne];
+                if (inputAmount > 0) {
+                    executeOrder(_key, tick, _executeZeroForOne, inputAmount);
+                    return (true, currentTick);
+                }
+            }
+        } else {
+            for (
+                int24 tick = _getLowerUsableTick(lastTick, _key.tickSpacing);
+                tick > currentTick;
+                tick -= _key.tickSpacing
+            ) {
+                uint256 inputAmount = pendingOrders[_key.toId()][tick][_executeZeroForOne];
+                if (inputAmount > 0) {
+                    executeOrder(_key, tick, _executeZeroForOne, inputAmount);
+                    return (true, currentTick);
+                }
+            }
+        }
+
+        return (false, currentTick);
+    }
+
+    // -------------------------------------------------------------------------
+    // PoolManager accounting
+    // -------------------------------------------------------------------------
+
+    /// @dev Performs a PoolManager swap as this hook, then settles owed input and takes output.
+    function _swapAndSettleBalances(PoolKey calldata _key, SwapParams memory _params) internal returns (BalanceDelta) {
+        BalanceDelta delta = poolManager.swap(_key, _params, "");
+
+        if (_params.zeroForOne) {
+            if (delta.amount0() < 0) _settle(_key.currency0, uint128(-delta.amount0()));
+            if (delta.amount1() > 0) _take(_key.currency1, uint128(delta.amount1()));
+        } else {
+            if (delta.amount1() < 0) _settle(_key.currency1, uint128(-delta.amount1()));
+            if (delta.amount0() > 0) _take(_key.currency0, uint128(delta.amount0()));
+        }
+
+        return delta;
+    }
+
+    /// @dev Pays tokens owed by this hook into the PoolManager.
     function _settle(Currency currency, uint128 _amount) internal {
-        // Transfer tokens to PM and let it know
         poolManager.sync(currency);
         currency.transfer(address(poolManager), _amount);
         poolManager.settle();
     }
 
+    /// @dev Withdraws tokens owed to this hook from the PoolManager.
     function _take(Currency currency, uint128 _amount) internal {
-        // Take tokens out of PM to our hook contract
         poolManager.take(currency, address(this), _amount);
     }
 
-    // ========== PRIVATE FUNCTIONS ==========
+    // -------------------------------------------------------------------------
+    // Tick helpers
+    // -------------------------------------------------------------------------
 
+    /// @dev Rounds toward negative infinity to the nearest usable tick.
+    ///      Solidity integer division truncates toward zero, so negative ticks need
+    ///      an extra decrement when they are not exact multiples of the tick spacing.
     function _getLowerUsableTick(int24 _tick, int24 _tickSpacing) private pure returns (int24) {
-        // _intervals = -100/60 = -1 (integer division)
-        int24 _intervals = _tick / _tickSpacing;
-
-        // since tick < 0, we round `_intervals` down to -2
-        // if tick > 0, `_intervals` is fine as it is
-        if (_tick < 0 && _tick % _tickSpacing != 0) _intervals--; // round towards negative infinity
-
-        // actual usable tick, then, is _intervals * tickSpacing
-        // i.e. -2 * 60 = -120
-        return _intervals * _tickSpacing;
+        int24 intervals = _tick / _tickSpacing;
+        if (_tick < 0 && _tick % _tickSpacing != 0) intervals--;
+        return intervals * _tickSpacing;
     }
 }
